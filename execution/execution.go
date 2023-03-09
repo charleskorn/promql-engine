@@ -17,7 +17,6 @@
 package execution
 
 import (
-	"runtime"
 	"sort"
 	"time"
 
@@ -132,21 +131,8 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 				hints.Range = t.Range.Milliseconds()
 				filter := storage.GetFilteredSelector(start, end, opts.Step.Milliseconds(), vs.LabelMatchers, filters, hints)
 
-				numShards := runtime.GOMAXPROCS(0) / 2
-				if numShards < 1 {
-					numShards = 1
-				}
-
-				operators := make([]model.VectorOperator, 0, numShards)
-				for i := 0; i < numShards; i++ {
-					operator := exchange.NewConcurrent(
-						scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, t.Range, vs.Offset, i, numShards),
-						2,
-					)
-					operators = append(operators, operator)
-				}
-
-				return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
+				numShards := 1
+				return scan.NewMatrixSelector(model.NewVectorPool(stepsBatch), filter, call, e, opts, t.Range, vs.Offset, 0, numShards), nil
 			}
 		}
 
@@ -190,7 +176,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 			return nil, err
 		}
 
-		return exchange.NewConcurrent(next, 2), nil
+		return next, nil
 
 	case *parser.BinaryExpr:
 		if e.LHS.Type() == parser.ValueTypeScalar || e.RHS.Type() == parser.ValueTypeScalar {
@@ -252,7 +238,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 		}
 		coalesce := exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...)
 		dedup := exchange.NewDedupOperator(model.NewVectorPool(stepsBatch), coalesce)
-		return exchange.NewConcurrent(dedup, 2), nil
+		return dedup, nil
 
 	case logicalplan.RemoteExecution:
 		qry, err := e.Engine.NewRangeQuery(&promql.QueryOpts{}, e.Query, opts.Start, opts.End, opts.Step)
@@ -260,7 +246,7 @@ func newOperator(expr parser.Expr, storage *engstore.SelectorPool, opts *query.O
 			return nil, err
 		}
 
-		return exchange.NewConcurrent(remote.NewExecution(qry, model.NewVectorPool(stepsBatch), opts), 2), nil
+		return remote.NewExecution(qry, model.NewVectorPool(stepsBatch), opts), nil
 
 	default:
 		return nil, errors.Wrapf(parse.ErrNotSupportedExpr, "got: %s", e)
@@ -279,19 +265,8 @@ func unpackVectorSelector(t *parser.MatrixSelector) (*parser.VectorSelector, []*
 }
 
 func newShardedVectorSelector(selector engstore.SeriesSelector, opts *query.Options, offset time.Duration) (model.VectorOperator, error) {
-	numShards := runtime.GOMAXPROCS(0) / 2
-	if numShards < 1 {
-		numShards = 1
-	}
-	operators := make([]model.VectorOperator, 0, numShards)
-	for i := 0; i < numShards; i++ {
-		operator := exchange.NewConcurrent(
-			scan.NewVectorSelector(
-				model.NewVectorPool(stepsBatch), selector, opts, offset, i, numShards), 2)
-		operators = append(operators, operator)
-	}
-
-	return exchange.NewCoalesce(model.NewVectorPool(stepsBatch), operators...), nil
+	numShards := 1
+	return scan.NewVectorSelector(model.NewVectorPool(stepsBatch), selector, opts, offset, 0, numShards), nil
 }
 
 func newVectorBinaryOperator(e *parser.BinaryExpr, selectorPool *engstore.SelectorPool, opts *query.Options, hints storage.SelectHints) (model.VectorOperator, error) {
