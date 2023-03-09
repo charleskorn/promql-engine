@@ -136,11 +136,15 @@ func BenchmarkRangeQuery(b *testing.B) {
 			query: "rate(http_requests_total[1m])",
 		},
 		{
+			name:  "rate over 2h",
+			query: "rate(http_requests_total[2h])",
+		},
+		{
 			name:  "sum rate",
 			query: "sum(rate(http_requests_total[1m]))",
 		},
 		{
-			name:  "sum by rate",
+			name:  "sum rate by pod",
 			query: "sum by (pod) (rate(http_requests_total[1m]))",
 		},
 		{
