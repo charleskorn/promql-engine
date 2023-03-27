@@ -106,15 +106,18 @@ func (o *matrixSelector) GetPool() *model.VectorPool {
 func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 	select {
 	case <-ctx.Done():
+		o.releasePreviousPoints()
 		return nil, ctx.Err()
 	default:
 	}
 
 	if o.currentStep > o.maxt {
+		o.releasePreviousPoints()
 		return nil, nil
 	}
 
 	if err := o.loadSeries(ctx); err != nil {
+		o.releasePreviousPoints()
 		return nil, err
 	}
 
@@ -134,6 +137,7 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 			mint := maxt - o.selectRange
 			rangePoints, err := selectPoints(series.samples, mint, maxt, o.scanners[i].previousPoints)
 			if err != nil {
+				o.releasePreviousPoints()
 				return nil, err
 			}
 
@@ -180,6 +184,19 @@ func (o *matrixSelector) Next(ctx context.Context) ([]model.StepVector, error) {
 	return vectors, nil
 }
 
+func (o *matrixSelector) releasePreviousPoints() {
+	for i, scanner := range o.scanners {
+		pointsPool.Put(scanner.previousPoints)
+		o.scanners[i].previousPoints = nil
+	}
+}
+
+var pointsPool *sync.Pool = &sync.Pool{
+	New: func() any {
+		return []promql.Point{}
+	},
+}
+
 func (o *matrixSelector) loadSeries(ctx context.Context) error {
 	var err error
 	o.once.Do(func() {
@@ -205,9 +222,10 @@ func (o *matrixSelector) loadSeries(ctx context.Context) error {
 			sort.Sort(lbls)
 
 			o.scanners[i] = matrixScanner{
-				labels:    lbls,
-				signature: s.Signature,
-				samples:   storage.NewBufferIterator(s.Iterator(nil), o.selectRange),
+				labels:         lbls,
+				signature:      s.Signature,
+				samples:        storage.NewBufferIterator(s.Iterator(nil), o.selectRange),
+				previousPoints: pointsPool.Get().([]promql.Point)[:0],
 			}
 			o.series[i] = lbls
 		}
