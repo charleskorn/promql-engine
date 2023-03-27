@@ -193,7 +193,7 @@ func (o *matrixSelector) releasePreviousPoints() {
 
 var pointsPool *sync.Pool = &sync.Pool{
 	New: func() any {
-		return []promql.Point{}
+		return make([]promql.Point, 0, 3)
 	},
 }
 
@@ -261,6 +261,28 @@ func selectPoints(it *storage.BufferedSeriesIterator, mint, maxt int64, out []pr
 		out = out[:0]
 	}
 
+	guessAndResizeOut := func(newT int64) {
+		if len(out) != 1 {
+			return
+		}
+
+		delta := newT - out[0].T
+		if delta == 0 {
+			return
+		}
+
+		lengthGuess := ((maxt - mint) / delta) + 1
+
+		if cap(out) < int(lengthGuess) {
+			newOut := make([]promql.Point, 1, lengthGuess)
+			newOut[0] = out[0]
+
+			oldOut := out
+			out = newOut
+			pointsPool.Put(oldOut)
+		}
+	}
+
 	soughtValueType := it.Seek(maxt)
 	if soughtValueType == chunkenc.ValNone {
 		if it.Err() != nil {
@@ -280,6 +302,7 @@ loop:
 				continue loop
 			}
 			if t >= mint {
+				guessAndResizeOut(t)
 				out = append(out, promql.Point{T: t, H: h})
 			}
 		case chunkenc.ValFloat:
@@ -289,6 +312,7 @@ loop:
 			}
 			// Values in the buffer are guaranteed to be smaller than maxt.
 			if t >= mint {
+				guessAndResizeOut(t)
 				out = append(out, promql.Point{T: t, V: v})
 			}
 		}
@@ -299,11 +323,13 @@ loop:
 	case chunkenc.ValHistogram, chunkenc.ValFloatHistogram:
 		t, h := it.AtFloatHistogram()
 		if t == maxt && !value.IsStaleNaN(h.Sum) {
+			guessAndResizeOut(t)
 			out = append(out, promql.Point{T: t, H: h})
 		}
 	case chunkenc.ValFloat:
 		t, v := it.At()
 		if t == maxt && !value.IsStaleNaN(v) {
+			guessAndResizeOut(t)
 			out = append(out, promql.Point{T: t, V: v})
 		}
 	}
